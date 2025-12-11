@@ -177,43 +177,58 @@ def execute_test_connection():
 def create_query_deployment_types(
     inventory_model_ids: List[int],
     deployment_types: List[str]
-):
+) -> List[str]:
     """
-    Create multiple deployment types for multiple inventory model IDs
-    
+    Create multiple deployment type mutation strings for multiple inventory model IDs.
+
+    Each returned string is a complete GraphQL mutation that contains at most
+    `max_per_chunk` createDeploymentType operations (default 99). This function
+    returns a list of mutation strings ready to be POSTed to the GraphQL API.
+
     Args:
-        client: SonarGraphQLClient instance
         inventory_model_ids: List of inventory model IDs
         deployment_types: List of deployment type names to create
-    
+
     Returns:
-        Dictionary with results
+        List[str]: list of mutation strings (each <= `max_per_chunk` operations)
     """
-    # Build the mutation with aliases
-    mutation_parts = ["mutation CreateDeploymentTypes {"]
-    
+    # Build individual operation strings
+    operations: List[str] = []
     for model_id in inventory_model_ids:
         for dtype in deployment_types:
             # Create a safe alias (replace spaces/special chars with underscores)
             safe_name = dtype.replace(" ", "_").replace("-", "_").lower()
             alias = f"id{model_id}_{safe_name}"
-            
-            mutation_parts.append(f"""
+
+            op = f"""
   {alias}: createDeploymentType(input: {{
     inventory_model_id: {model_id}
     name: "{dtype}"
   }}) {{
     id
-  }}""")
-    
-    mutation_parts.append("\n}")
-    mutation = "\n".join(mutation_parts)
-    
-    print("Executing mutation...")
+  }}"""
+
+            operations.append(op)
+
+    # Chunk operations into groups no larger than max_per_chunk
+    max_per_chunk = 99
+    chunks: List[List[str]] = [operations[i:i+max_per_chunk] for i in range(0, len(operations), max_per_chunk)]
+
+    mutation_strings: List[str] = []
+    for chunk in chunks:
+        parts = ["mutation CreateDeploymentTypes {"] + chunk + ["\n}"]
+        mutation = "\n".join(parts)
+        mutation_strings.append(mutation)
+
+    print("Preparing mutation(s)...")
     print(f"Creating {len(deployment_types)} deployment types for {len(inventory_model_ids)} models")
-    print(f"Total operations: {len(deployment_types) * len(inventory_model_ids)}\n")
-    
-    return mutation
+    total_ops = len(operations)
+    print(f"Total operations: {total_ops}")
+    print(f"Split into {len(mutation_strings)} mutation(s) with up to {max_per_chunk} operations each\n")
+
+
+
+    return mutation_strings
 
 def build_api_request_and_execute(query: str):
     # Get configuration from .env
@@ -257,30 +272,53 @@ def build_api_request_and_execute(query: str):
     print("Mutation executed successfully!\n")
     return result
 
-        
+def get_Inventory_Model_IDs_query():
+
+    query = """ query getInventoryModels {
+  inventory_models{
+    entities{
+      id
+    }
+  }
+}"""
+    return query
+
 
 
 def main():
 
+    modelIDs_query = get_Inventory_Model_IDs_query()
+    # print("modelIDs_query:", modelIDs_query)
 
-    inventory_model_ids = [3] 
+    result = build_api_request_and_execute(modelIDs_query)
+    if result is not None:
+        inventory_model_ids = [entity['id'] for entity in result['data']['inventory_models']['entities']]
+        print(f"Retrieved Inventory Model IDs: {inventory_model_ids}")
+
+
+
+    #inventory_model_ids = ['4'] 
     deployment_types = ["Active - Customer", "Active - Infrastructure", "Inactive Reserve", "Maintenance", "Lost", "Awaiting Recovery"]
 
-    mutation = create_query_deployment_types(inventory_model_ids, deployment_types)
+    mutations = create_query_deployment_types(inventory_model_ids, deployment_types)
 
-    print("Generated Mutation:")
+    print(f"Generated {len(mutations)} mutation(s).")
 
-    #print(mutation)
+    all_results = []
+    for idx, mut in enumerate(mutations, start=1):
+        print(f"\n--- Executing mutation {idx}/{len(mutations)} ---")
+        res = build_api_request_and_execute(mut)
+        all_results.append(res)
+        if res is not None:
+            print(f"Mutation {idx} executed successfully!")
+        else:
+            print(f"Mutation {idx} failed.")
 
-    result = build_api_request_and_execute(mutation)
-    if result is not None:
-        print("Deployment types created successfully!")
-    else:
-        print("Failed to create deployment types.")
+    # Pretty-print aggregated JSON results
+    print("Result(s):")
+    print(json.dumps(all_results, indent=2, ensure_ascii=False))
 
-    # Pretty-print JSON result
-    print("Result:")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+
 
 
 
